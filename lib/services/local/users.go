@@ -633,6 +633,31 @@ func (s *IdentityService) GetMFADevices(ctx context.Context, user string) ([]*ty
 	return devices, nil
 }
 
+func (s *IdentityService) GetMFADevice(ctx context.Context, user, id string) (*types.MFADevice, error) {
+	if user == "" {
+		return nil, trace.BadParameter("missing parameter user")
+	}
+
+	if id == "" {
+		return nil, trace.BadParameter("missing parameter id")
+	}
+
+	item, err := s.Get(ctx, backend.Key(webPrefix, usersPrefix, user, mfaDevicePrefix, id))
+	if err != nil {
+		if trace.IsNotFound(err) {
+			return nil, trace.NotFound("mfa device(%v) not found", id)
+		}
+		return nil, trace.Wrap(err)
+	}
+
+	var d *types.MFADevice
+	if err := json.Unmarshal(item.Value, d); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return d, nil
+}
+
 func (s *IdentityService) UpsertU2FSignChallenge(user string, challenge *u2f.Challenge) error {
 	if user == "" {
 		return trace.BadParameter("missing parameter user")

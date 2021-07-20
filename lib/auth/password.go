@@ -449,12 +449,16 @@ func (s *Server) changeUserSecondFactor(req *proto.ChangePasswordWithTokenReques
 		if secondFactor == constants.SecondFactorU2F {
 			return trace.BadParameter("user %q sent an OTP token during password reset but cluster only allows U2F for second factor", username)
 		}
-		return s.createNewTOTPDevice(ctx, newTOTPDeviceRequest{
+		if _, err := s.createNewTOTPDevice(ctx, newTOTPDeviceRequest{
 			tokenID:           req.GetTokenID(),
 			username:          username,
 			deviceName:        req.GetDeviceName(),
 			secondFactorToken: req.GetSecondFactorToken(),
-		})
+		}); err != nil {
+			return trace.Wrap(err)
+		}
+
+		return nil
 	}
 
 	if req.U2FRegisterResponse != nil {
@@ -467,7 +471,7 @@ func (s *Server) changeUserSecondFactor(req *proto.ChangePasswordWithTokenReques
 			return trace.Wrap(err)
 		}
 
-		return s.createNewU2FDevice(ctx, newU2FDeviceRequest{
+		if _, err := s.createNewU2FDevice(ctx, newU2FDeviceRequest{
 			tokenID:    req.GetTokenID(),
 			username:   username,
 			deviceName: req.GetDeviceName(),
@@ -476,7 +480,11 @@ func (s *Server) changeUserSecondFactor(req *proto.ChangePasswordWithTokenReques
 				ClientData:       req.GetU2FRegisterResponse().GetClientData(),
 			},
 			cfg: cfg,
-		})
+		}); err != nil {
+			return trace.Wrap(err)
+		}
+
+		return nil
 	}
 
 	if secondFactor != constants.SecondFactorOptional {
@@ -492,10 +500,10 @@ type newTOTPDeviceRequest struct {
 	secondFactorToken string
 }
 
-func (s *Server) createNewTOTPDevice(ctx context.Context, req newTOTPDeviceRequest) error {
+func (s *Server) createNewTOTPDevice(ctx context.Context, req newTOTPDeviceRequest) (*types.MFADevice, error) {
 	secrets, err := s.Identity.GetResetPasswordTokenSecrets(ctx, req.tokenID)
 	if err != nil {
-		return trace.Wrap(err)
+		return nil, trace.Wrap(err)
 	}
 
 	deviceName := req.deviceName
@@ -506,18 +514,18 @@ func (s *Server) createNewTOTPDevice(ctx context.Context, req newTOTPDeviceReque
 
 	dev, err := services.NewTOTPDevice(deviceName, secrets.GetOTPKey(), s.clock.Now())
 	if err != nil {
-		return trace.Wrap(err)
+		return nil, trace.Wrap(err)
 	}
 
 	if err := s.checkTOTP(ctx, req.username, req.secondFactorToken, dev); err != nil {
-		return trace.Wrap(err)
+		return nil, trace.Wrap(err)
 	}
 
 	if err := s.UpsertMFADevice(ctx, req.username, dev); err != nil {
-		return trace.Wrap(err)
+		return nil, trace.Wrap(err)
 	}
 
-	return nil
+	return s.GetMFADevice(ctx, req.username, dev.Id)
 }
 
 type newU2FDeviceRequest struct {
@@ -528,14 +536,14 @@ type newU2FDeviceRequest struct {
 	cfg                 *types.U2F
 }
 
-func (s *Server) createNewU2FDevice(ctx context.Context, req newU2FDeviceRequest) error {
+func (s *Server) createNewU2FDevice(ctx context.Context, req newU2FDeviceRequest) (*types.MFADevice, error) {
 	deviceName := req.deviceName
 	if deviceName == "" {
 		// Default value still used upon UI invite/reset forms.
 		deviceName = "u2f"
 	}
 
-	_, err := u2f.RegisterVerify(ctx, u2f.RegisterVerifyParams{
+	dev, err := u2f.RegisterVerify(ctx, u2f.RegisterVerifyParams{
 		DevName:                deviceName,
 		ChallengeStorageKey:    req.tokenID,
 		RegistrationStorageKey: req.username,
@@ -544,6 +552,9 @@ func (s *Server) createNewU2FDevice(ctx context.Context, req newU2FDeviceRequest
 		Clock:                  s.GetClock(),
 		AttestationCAs:         req.cfg.DeviceAttestationCAs,
 	})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
 
-	return trace.Wrap(err)
+	return s.GetMFADevice(ctx, req.username, dev.Id)
 }

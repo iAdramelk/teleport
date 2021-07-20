@@ -1123,8 +1123,26 @@ func (a *Server) DeleteMFADeviceWithToken(ctx context.Context, req *proto.Delete
 		return trace.BadParameter("expired token")
 	}
 
+	device, err := a.GetMFADevice(ctx, token.GetUser(), req.GetDeviceID())
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
 	if err := a.DeleteMFADevice(ctx, token.GetUser(), req.GetDeviceID()); err != nil {
 		return trace.Wrap(err)
+	}
+
+	if err := a.emitter.EmitAuditEvent(ctx, &apievents.MFADeviceDelete{
+		Metadata: apievents.Metadata{
+			Type: events.MFADeviceDeleteEvent,
+			Code: events.MFADeviceDeleteEventCode,
+		},
+		UserMetadata: apievents.UserMetadata{
+			User: token.GetUser(),
+		},
+		MFADeviceMetadata: mfaDeviceEventMetadata(device),
+	}); err != nil {
+		log.WithError(err).Warn("Failed to emit delete mfa device event.")
 	}
 
 	return nil

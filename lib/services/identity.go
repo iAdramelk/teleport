@@ -126,6 +126,9 @@ type Identity interface {
 	// GetMFADevices gets all MFA devices for the user.
 	GetMFADevices(ctx context.Context, user string) ([]*types.MFADevice, error)
 
+	// GetMFADevice gets a MFA device by user and id.
+	GetMFADevice(ctx context.Context, user, id string) (*types.MFADevice, error)
+
 	// DeleteMFADevice deletes an MFA device for the user by ID.
 	DeleteMFADevice(ctx context.Context, user, id string) error
 

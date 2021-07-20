@@ -372,6 +372,7 @@ func (s *Server) SetNewAuthCredWithRecoveryToken(ctx context.Context, req *proto
 	}
 
 	// Check that the correct auth credential is being recovered before setting a new one.
+	var newDevice *types.MFADevice
 	switch token.GetRecoverType() {
 	case types.RecoverType_RECOVER_PASSWORD:
 		if req.GetPassword() == nil {
@@ -401,7 +402,7 @@ func (s *Server) SetNewAuthCredWithRecoveryToken(ctx context.Context, req *proto
 			return trace.Wrap(err)
 		}
 
-		if err := s.createNewU2FDevice(ctx, newU2FDeviceRequest{
+		device, err := s.createNewU2FDevice(ctx, newU2FDeviceRequest{
 			tokenID:    req.GetTokenID(),
 			username:   token.GetUser(),
 			deviceName: req.GetDeviceName(),
@@ -410,28 +411,47 @@ func (s *Server) SetNewAuthCredWithRecoveryToken(ctx context.Context, req *proto
 				ClientData:       req.GetU2FRegisterResponse().GetClientData(),
 			},
 			cfg: cfg,
-		}); err != nil {
+		})
+		if err != nil {
 			if trace.IsAlreadyExists(err) {
 				return trace.AlreadyExists("mfa device %q already exists", req.GetDeviceName())
 			}
 			return trace.Wrap(err)
 		}
+		newDevice = device
 
 	case types.RecoverType_RECOVER_TOTP:
 		if req.GetSecondFactorToken() == "" {
 			return trace.BadParameter("expected a second factor token")
 		}
 
-		if err := s.createNewTOTPDevice(ctx, newTOTPDeviceRequest{
+		device, err := s.createNewTOTPDevice(ctx, newTOTPDeviceRequest{
 			tokenID:           req.GetTokenID(),
 			username:          token.GetUser(),
 			deviceName:        req.GetDeviceName(),
 			secondFactorToken: req.GetSecondFactorToken(),
-		}); err != nil {
+		})
+		if err != nil {
 			if trace.IsAlreadyExists(err) {
 				return trace.AlreadyExists("mfa device %q already exists", req.GetDeviceName())
 			}
 			return trace.Wrap(err)
+		}
+		newDevice = device
+	}
+
+	if newDevice != nil {
+		if err := s.emitter.EmitAuditEvent(ctx, &apievents.MFADeviceAdd{
+			Metadata: apievents.Metadata{
+				Type: events.MFADeviceAddEvent,
+				Code: events.MFADeviceAddEventCode,
+			},
+			UserMetadata: apievents.UserMetadata{
+				User: token.GetUser(),
+			},
+			MFADeviceMetadata: mfaDeviceEventMetadata(newDevice),
+		}); err != nil {
+			log.WithError(err).Warn("Failed to emit add mfa device event.")
 		}
 	}
 
@@ -598,8 +618,7 @@ func (s *Server) createRecoveryToken(ctx context.Context, username, tokenType st
 			Code: events.ResetPasswordTokenCreateCode,
 		},
 		UserMetadata: apievents.UserMetadata{
-			User:         ClientUsername(ctx),
-			Impersonator: ClientImpersonator(ctx),
+			User: username,
 		},
 		ResourceMetadata: apievents.ResourceMetadata{
 			Name:    req.Name,
